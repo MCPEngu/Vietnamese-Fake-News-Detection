@@ -1,0 +1,23 @@
+{
+  "high_priority": [
+    "post_ratio",
+    "num_real",
+    "num_fake"
+  ],
+  "medium_priority": [],
+  "all_recommended": [
+    "post_ratio",
+    "num_real",
+    "num_fake"
+  ],
+  "ratio_features": [
+    "like_ratio",
+    "cmt_ratio",
+    "share_ratio",
+    "cmt_to_like",
+    "share_to_like",
+    "emoji_density",
+    "url_density",
+    "hashtag_density"
+  ]
+}
