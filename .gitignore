@@ -1,13 +1,41 @@
+# Python
 venv/
 .venv/
 __pycache__/
-.env
 *.pyc
+*.pyo
+.env
 .ipynb_checkpoints/
+
+# OS
 .DS_Store
+Thumbs.db
+
+# Logs
 *.log
+
+# Models & Large Files (DO NOT PUSH)
 models/*.pkl
 models/*.joblib
+models/*.pt
+models/*.bin
+models/*.h5
+*.onnx
+
+# Embeddings & Encoded Data (~130MB)
 data/encoded/
 data/reduced/
+
+# Results (generated)
 results/
+
+# Huggingface cache
+.cache/
+~/.cache/huggingface/
+
+# IDE
+.vscode/
+.idea/
+
+# Server data
+server/data/
