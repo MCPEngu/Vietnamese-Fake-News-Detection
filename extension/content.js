@@ -1,15 +1,18 @@
 /**
  * Content Script - Inject vào Facebook
  * Chức năng: Đọc DOM → Lấy thông tin bài đăng → Gửi cho background.js
+ * 
+ * QUAN TRỌNG: Mỗi bài đăng = 1 ARTICLE container (div[role="article"])
+ * Không tìm từng text element nhỏ → tránh 1 bài bị chia nhiều phần
  */
 
 // ============================================================================
 // CONFIG & STATE
 // ============================================================================
 let extensionEnabled = true;
-let currentMode = "feed"; // "feed" hoặc "group"
+let currentMode = "feed";
 let currentGroupId = null;
-const processedPosts = new Set(); // Tránh xử lý trùng
+const processedArticles = new Set(); // Track bằng article ID, không phải text
 
 // ============================================================================
 // INITIALIZATION
@@ -17,53 +20,38 @@ const processedPosts = new Set(); // Tránh xử lý trùng
 function initialize() {
   console.log("[Content] Initializing...");
   
-  // Load settings
   loadSettings();
-  
-  // Detect if we're in a group
   detectGroupContext();
-  
-  // Start observing DOM changes
   startObserver();
   
-  // Process existing posts
-  processExistingPosts();
+  // Delay để đợi FB render xong
+  setTimeout(() => {
+    processExistingPosts();
+  }, 1500);
   
   console.log("[Content] Initialized successfully");
 }
 
-/**
- * Load settings from storage
- */
 function loadSettings() {
   chrome.storage.sync.get(["enabled", "mode", "groupId"], (data) => {
     extensionEnabled = data.enabled !== false;
     currentMode = data.mode || "feed";
     currentGroupId = data.groupId;
-    console.log("[Content] Settings loaded:", { extensionEnabled, currentMode, currentGroupId });
   });
 }
 
-/**
- * Detect if current page is a Facebook group
- */
 function detectGroupContext() {
   const url = window.location.href;
-  
-  // Check if URL contains /groups/
   const groupMatch = url.match(/facebook\.com\/groups\/([^\/\?]+)/);
   
   if (groupMatch) {
     currentGroupId = groupMatch[1];
     currentMode = "group";
-    
-    // Save to storage
     chrome.runtime.sendMessage({
       action: "saveSettings",
       data: { mode: "group", groupId: currentGroupId }
     });
-    
-    console.log("[Content] Detected group:", currentGroupId);
+    console.log("[Content] Group mode:", currentGroupId);
   } else {
     currentMode = "feed";
     console.log("[Content] Feed mode");
@@ -71,226 +59,295 @@ function detectGroupContext() {
 }
 
 // ============================================================================
-// DOM OBSERVER
+// DOM OBSERVER - Đơn giản hóa, dùng interval scan
 // ============================================================================
-let observer = null;
 
 function startObserver() {
-  observer = new MutationObserver((mutations) => {
-    if (!extensionEnabled) return;
-    
-    for (const mutation of mutations) {
-      if (mutation.type === "childList" && mutation.addedNodes.length > 0) {
-        for (const node of mutation.addedNodes) {
-          if (node.nodeType === Node.ELEMENT_NODE) {
-            // Tìm các bài đăng mới
-            const posts = findPosts(node);
-            posts.forEach(processPost);
-          }
-        }
-      }
+  // Scan định kỳ mỗi 2 giây (đơn giản và hiệu quả hơn MutationObserver cho FB)
+  setInterval(() => {
+    if (extensionEnabled) {
+      processExistingPosts();
     }
+  }, 2000);
+  
+  // Scan khi scroll
+  let scrollTimeout;
+  window.addEventListener('scroll', () => {
+    clearTimeout(scrollTimeout);
+    scrollTimeout = setTimeout(() => {
+      if (extensionEnabled) {
+        processExistingPosts();
+      }
+    }, 500);
   });
   
-  observer.observe(document.body, {
-    childList: true,
-    subtree: true
-  });
-  
-  console.log("[Content] Observer started");
-}
-
-function stopObserver() {
-  if (observer) {
-    observer.disconnect();
-    observer = null;
-  }
+  console.log("[Content] Observer started (interval mode)");
 }
 
 // ============================================================================
-// POST EXTRACTION
+// POST EXTRACTION - TÌM ARTICLE CONTAINER (KHÔNG PHẢI TEXT ELEMENTS)
 // ============================================================================
 
 /**
- * Find all post elements within a node
+ * Tìm tất cả ARTICLE containers - mỗi article = 1 bài đăng duy nhất
  */
-function findPosts(node) {
-  // Facebook post selectors (có thể cần cập nhật khi FB thay đổi DOM)
-  const selectors = [
-    '[data-ad-preview="message"]', // Post content
-    'div[data-ad-comet-preview="message"]',
-    'div[data-ad-rendering-role="story_message"]',
-    // Fallback selectors
-    'div.x1iorvi4[dir="auto"]', // Common content wrapper
-  ];
-  
-  const posts = [];
-  
-  for (const selector of selectors) {
-    if (node.matches && node.matches(selector)) {
-      posts.push(node);
-    }
-    const found = node.querySelectorAll ? node.querySelectorAll(selector) : [];
-    posts.push(...found);
-  }
-  
-  return posts;
+function findArticles() {
+  // Facebook dùng div[role="article"] cho mỗi bài đăng
+  return Array.from(document.querySelectorAll('div[role="article"]'));
 }
 
 /**
- * Process existing posts on page load
+ * Tạo ID duy nhất cho article
  */
-function processExistingPosts() {
-  const posts = findPosts(document.body);
-  console.log(`[Content] Found ${posts.length} existing posts`);
-  posts.forEach(processPost);
-}
-
-/**
- * Process a single post element
- */
-function processPost(postElement) {
-  // Generate unique ID for post
-  const postId = generatePostId(postElement);
-  
-  if (!postId || processedPosts.has(postId)) {
-    return; // Already processed
+function getArticleId(article) {
+  // Cách 1: Dùng aria-describedby (unique ID từ Facebook)
+  const ariaDescribedBy = article.getAttribute('aria-describedby');
+  if (ariaDescribedBy) {
+    return `fb-${ariaDescribedBy}`;
   }
   
-  processedPosts.add(postId);
-  
-  // Extract post data
-  const postData = extractPostData(postElement);
-  
-  if (!postData || !postData.content_text || postData.content_text.length < 20) {
-    return; // Skip short or empty posts
-  }
-  
-  console.log("[Content] Processing post:", postData.content_text.substring(0, 50) + "...");
-  
-  // Send to background for analysis
-  chrome.runtime.sendMessage(
-    {
-      action: "analyzePost",
-      data: postData
-    },
-    (response) => {
-      if (response && response.success) {
-        displayResult(postElement, response.data);
-      } else {
-        console.error("[Content] Analysis failed:", response?.error);
-      }
-    }
-  );
-}
-
-/**
- * Extract data from post element
- */
-function extractPostData(postElement) {
-  const data = {
-    content_text: null,
-    timestamp: null,
-    user_id: null
-  };
-  
-  // 1. Extract content text
-  data.content_text = postElement.textContent?.trim() || "";
-  
-  // 2. Extract timestamp
-  // Facebook hiển thị timestamp trong nhiều format khác nhau
-  const postContainer = postElement.closest('[data-ad-rendering-role]') 
-                       || postElement.closest('div[role="article"]')
-                       || postElement.parentElement?.parentElement;
-  
-  if (postContainer) {
-    // Tìm timestamp element
-    const timeElement = postContainer.querySelector('a[href*="/posts/"] span')
-                       || postContainer.querySelector('span[id*="jsc"]');
-    
-    if (timeElement) {
-      data.timestamp = parseTimestamp(timeElement.textContent);
+  // Cách 2: Tìm link đến post
+  const postLink = article.querySelector('a[href*="/posts/"], a[href*="permalink"], a[href*="story_fbid"]');
+  if (postLink) {
+    const href = postLink.getAttribute('href');
+    const match = href.match(/(\d{10,})/); // Tìm số dài (post ID)
+    if (match) {
+      return `fb-post-${match[1]}`;
     }
   }
   
-  // Fallback: use current time if timestamp not found
-  if (!data.timestamp) {
-    data.timestamp = new Date().toISOString();
-  }
-  
-  // 3. Extract user_id (only in group mode)
-  if (currentMode === "group") {
-    const userLink = postContainer?.querySelector('a[href*="user/"]')
-                    || postContainer?.querySelector('a[href*="/profile.php"]')
-                    || postContainer?.querySelector('h2 a, h3 a, h4 a');
-    
-    if (userLink) {
-      const href = userLink.getAttribute('href');
-      data.user_id = extractUserIdFromHref(href);
-    }
-  }
-  
-  return data;
-}
-
-/**
- * Parse Facebook timestamp to ISO format
- */
-function parseTimestamp(timeText) {
-  if (!timeText) return new Date().toISOString();
-  
-  const now = new Date();
-  
-  // Common patterns: "2 giờ", "3 phút", "Hôm qua", "15 tháng 2"
-  if (timeText.includes("phút")) {
-    const mins = parseInt(timeText) || 0;
-    return new Date(now - mins * 60000).toISOString();
-  }
-  
-  if (timeText.includes("giờ")) {
-    const hours = parseInt(timeText) || 0;
-    return new Date(now - hours * 3600000).toISOString();
-  }
-  
-  if (timeText.includes("Hôm qua") || timeText.includes("hôm qua")) {
-    return new Date(now - 86400000).toISOString();
-  }
-  
-  // Default: return current time
-  return now.toISOString();
-}
-
-/**
- * Extract user ID from profile URL
- */
-function extractUserIdFromHref(href) {
-  if (!href) return null;
-  
-  // Pattern 1: /user/123456789/
-  const userMatch = href.match(/user\/(\d+)/);
-  if (userMatch) return userMatch[1];
-  
-  // Pattern 2: /profile.php?id=123456789
-  const idMatch = href.match(/id=(\d+)/);
-  if (idMatch) return idMatch[1];
-  
-  // Pattern 3: /username (vanity URL)
-  const vanityMatch = href.match(/facebook\.com\/([^\/\?]+)/);
-  if (vanityMatch && !vanityMatch[1].includes('.')) {
-    return vanityMatch[1]; // Return username as ID
+  // Cách 3: Hash từ vị trí + text ngắn (fallback)
+  const rect = article.getBoundingClientRect();
+  const text = getArticleText(article);
+  if (text && text.length > 30) {
+    return `fb-hash-${hashString(text.substring(0, 100) + rect.top)}`;
   }
   
   return null;
 }
 
 /**
- * Generate unique ID for a post
+ * Lấy TEXT CONTENT chính của bài đăng (không lấy comments)
  */
-function generatePostId(postElement) {
-  const text = postElement.textContent?.substring(0, 100) || "";
-  return hashString(text);
+function getArticleText(article) {
+  // Đánh dấu đã check article này
+  if (article.dataset.fakeNewsChecked === 'pending') {
+    return null; // Đang xử lý
+  }
+  
+  // Cách 1: Tìm div có data attribute đặc biệt (ưu tiên cao)
+  const messageDiv = article.querySelector('[data-ad-preview="message"]') ||
+                     article.querySelector('[data-ad-comet-preview="message"]') ||
+                     article.querySelector('[data-ad-rendering-role="story_message"]');
+  
+  if (messageDiv) {
+    return messageDiv.textContent?.trim() || "";
+  }
+  
+  // Cách 2: Tìm div[dir="auto"] có text dài nhất trong phần trên của article
+  // (phần dưới thường là comments)
+  const allDirAuto = article.querySelectorAll('div[dir="auto"]');
+  
+  let bestText = "";
+  let bestLength = 0;
+  
+  for (const div of allDirAuto) {
+    // Bỏ qua nếu nằm trong comment section
+    if (div.closest('[aria-label*="comment"], [aria-label*="bình luận"]')) {
+      continue;
+    }
+    
+    const text = div.textContent?.trim() || "";
+    
+    // Bỏ qua text quá ngắn hoặc là metadata
+    if (text.length < 30 || isMetadata(text)) {
+      continue;
+    }
+    
+    // Lấy text dài nhất (thường là nội dung chính)
+    if (text.length > bestLength) {
+      bestText = text;
+      bestLength = text.length;
+    }
+  }
+  
+  return bestText;
 }
 
+/**
+ * Kiểm tra text có phải metadata (time, reactions, etc.)
+ */
+function isMetadata(text) {
+  const first50 = text.substring(0, 50);
+  const metaPatterns = [
+    /^\d+\s*(giờ|phút|ngày|tuần|tháng|giây)/i,
+    /^(Like|Comment|Share|Thích|Bình luận|Chia sẻ)/i,
+    /^\d+[KMk]?\s*(likes?|comments?|shares?|lượt)/i,
+    /^(Sponsored|Được tài trợ)/i,
+    /^(See more|Xem thêm|See less|Thu gọn)/i,
+    /^(Write a comment|Viết bình luận)/i,
+    /^All reactions/i,
+  ];
+  
+  return metaPatterns.some(pattern => pattern.test(first50));
+}
+
+/**
+ * Process existing posts on page
+ */
+function processExistingPosts() {
+  const articles = findArticles();
+  let processedCount = 0;
+  
+  for (const article of articles) {
+    // Bỏ qua nếu đã có indicator
+    if (article.querySelector('.fake-news-indicator')) {
+      continue;
+    }
+    
+    const articleId = getArticleId(article);
+    
+    if (!articleId || processedArticles.has(articleId)) {
+      continue;
+    }
+    
+    // Kiểm tra article có đang hiển thị trên màn hình không
+    const rect = article.getBoundingClientRect();
+    const isVisible = rect.top < window.innerHeight + 200 && rect.bottom > -200;
+    
+    if (!isVisible) {
+      continue; // Chỉ process bài gần viewport
+    }
+    
+    // Đánh dấu đang xử lý
+    article.dataset.fakeNewsChecked = 'pending';
+    processedArticles.add(articleId);
+    
+    processArticle(article, articleId);
+    processedCount++;
+  }
+  
+  if (processedCount > 0) {
+    console.log(`[Content] Processed ${processedCount} new articles`);
+  }
+}
+
+/**
+ * Process một article
+ */
+function processArticle(article, articleId) {
+  const text = getArticleText(article);
+  
+  if (!text || text.length < 30) {
+    console.log(`[Content] Skip article: text too short or empty`);
+    article.dataset.fakeNewsChecked = 'skipped';
+    return;
+  }
+  
+  console.log(`[Content] Processing: "${text.substring(0, 50)}..."`);
+  
+  // Tạo post data
+  const postData = {
+    content_text: text,
+    timestamp: extractTimestamp(article),
+    user_id: currentMode === "group" ? extractUserId(article) : null
+  };
+  
+  // Gửi đến background
+  if (!chrome.runtime?.id) {
+    console.warn("[Content] Extension context invalidated");
+    return;
+  }
+  
+  try {
+    chrome.runtime.sendMessage(
+      { action: "analyzePost", data: postData },
+      (response) => {
+        if (chrome.runtime.lastError) {
+          console.error("[Content] Runtime error:", chrome.runtime.lastError.message);
+          article.dataset.fakeNewsChecked = 'error';
+          return;
+        }
+        
+        if (response?.success) {
+          displayResult(article, response.data);
+          article.dataset.fakeNewsChecked = 'done';
+        } else {
+          console.error("[Content] Analysis failed:", response?.error);
+          article.dataset.fakeNewsChecked = 'error';
+        }
+      }
+    );
+  } catch (e) {
+    console.error("[Content] sendMessage error:", e);
+    article.dataset.fakeNewsChecked = 'error';
+  }
+}
+
+/**
+ * Extract timestamp từ article
+ */
+function extractTimestamp(article) {
+  // Tìm link chứa thời gian (thường là link to post)
+  const timeLinks = article.querySelectorAll('a[href*="/posts/"], a[href*="permalink"], a[href*="story_fbid"]');
+  for (const link of timeLinks) {
+    const spans = link.querySelectorAll('span');
+    for (const span of spans) {
+      const text = span.textContent?.trim();
+      if (text && /^\d+\s*(giờ|phút|ngày|h|m|d)/i.test(text)) {
+        return parseTimestamp(text);
+      }
+    }
+  }
+  return new Date().toISOString();
+}
+
+/**
+ * Extract user ID từ article
+ */
+function extractUserId(article) {
+  const userLinks = article.querySelectorAll('a[href*="/user/"], a[href*="profile.php"], a[href*="facebook.com/"]');
+  for (const link of userLinks) {
+    const href = link.getAttribute('href');
+    const match = href.match(/user\/(\d+)|id=(\d+)/);
+    if (match) return match[1] || match[2];
+  }
+  return null;
+}
+
+/**
+ * Parse timestamp text thành ISO format
+ */
+function parseTimestamp(timeText) {
+  if (!timeText) return new Date().toISOString();
+  
+  const now = new Date();
+  
+  if (/phút|m\b/i.test(timeText)) {
+    const mins = parseInt(timeText) || 0;
+    return new Date(now - mins * 60000).toISOString();
+  }
+  
+  if (/giờ|h\b/i.test(timeText)) {
+    const hours = parseInt(timeText) || 0;
+    return new Date(now - hours * 3600000).toISOString();
+  }
+  
+  if (/ngày|d\b/i.test(timeText)) {
+    const days = parseInt(timeText) || 0;
+    return new Date(now - days * 86400000).toISOString();
+  }
+  
+  if (/hôm qua|yesterday/i.test(timeText)) {
+    return new Date(now - 86400000).toISOString();
+  }
+  
+  return now.toISOString();
+}
+
+/**
+ * Hash string to create ID
+ */
 function hashString(str) {
   let hash = 0;
   for (let i = 0; i < str.length; i++) {
@@ -298,30 +355,32 @@ function hashString(str) {
     hash = ((hash << 5) - hash) + char;
     hash = hash & hash;
   }
-  return hash.toString(16);
+  return Math.abs(hash).toString(16);
 }
 
 // ============================================================================
-// DISPLAY RESULTS
+// DISPLAY RESULTS - Hiển thị KẾT QUẢ trên ARTICLE CONTAINER
 // ============================================================================
 
 /**
- * Display analysis result on the post
+ * Hiển thị kết quả phân tích trên article
  */
-function displayResult(postElement, result) {
-  // Remove existing indicator if any
-  const existingIndicator = postElement.parentElement?.querySelector('.fake-news-indicator');
-  if (existingIndicator) {
-    existingIndicator.remove();
+function displayResult(article, result) {
+  if (!article || !document.body.contains(article)) {
+    console.warn("[Content] Article no longer in DOM");
+    return;
   }
   
-  // Create indicator element
+  // Kiểm tra đã có indicator chưa (tránh duplicate)
+  if (article.querySelector('.fake-news-indicator')) {
+    return;
+  }
+  
+  // Tạo indicator element
   const indicator = document.createElement('div');
   indicator.className = 'fake-news-indicator';
   
-  // Set style based on result
   if (result.label === 0) {
-    // Real news
     indicator.classList.add('real');
     indicator.innerHTML = `
       <span class="icon">✓</span>
@@ -329,7 +388,6 @@ function displayResult(postElement, result) {
       <span class="confidence">${(result.confidence * 100).toFixed(0)}%</span>
     `;
   } else {
-    // Fake news
     indicator.classList.add('fake');
     indicator.innerHTML = `
       <span class="icon">⚠</span>
@@ -338,23 +396,23 @@ function displayResult(postElement, result) {
     `;
   }
   
-  // Insert indicator
-  postElement.style.position = 'relative';
-  postElement.parentElement.insertBefore(indicator, postElement);
+  // Chèn indicator vào ĐẦU article
+  article.style.position = 'relative';
+  article.insertBefore(indicator, article.firstChild);
   
-  // Add border to post
+  // Thêm border cho article 
   if (result.label === 0) {
-    postElement.style.borderLeft = '3px solid #4CAF50';
+    article.style.borderLeft = '4px solid #4CAF50';
   } else {
-    postElement.style.borderLeft = '3px solid #f44336';
+    article.style.borderLeft = '4px solid #f44336';
   }
-  postElement.style.paddingLeft = '10px';
+  article.style.paddingLeft = '8px';
   
-  console.log(`[Content] Displayed result: ${result.label === 0 ? 'REAL' : 'FAKE'}`);
+  console.log(`[Content] Displayed: ${result.label === 0 ? 'REAL' : 'FAKE'} (${(result.confidence * 100).toFixed(0)}%)`);
 }
 
 // ============================================================================
-// MESSAGE LISTENER (from popup)
+// MESSAGE LISTENER
 // ============================================================================
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   switch (request.action) {
@@ -365,7 +423,14 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       break;
       
     case "reprocessPosts":
-      processedPosts.clear();
+      processedArticles.clear();
+      // Xóa tất cả indicators hiện có
+      document.querySelectorAll('.fake-news-indicator').forEach(el => el.remove());
+      document.querySelectorAll('[data-fake-news-checked]').forEach(el => {
+        delete el.dataset.fakeNewsChecked;
+        el.style.borderLeft = '';
+        el.style.paddingLeft = '';
+      });
       processExistingPosts();
       sendResponse({ success: true });
       break;
@@ -375,7 +440,6 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 // ============================================================================
 // START
 // ============================================================================
-// Wait for DOM to be ready
 if (document.readyState === 'loading') {
   document.addEventListener('DOMContentLoaded', initialize);
 } else {
