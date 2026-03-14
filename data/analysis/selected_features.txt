@@ -1,12 +1,12 @@
-# Selected Features for Training
-# Selection Criteria: |Cohen's d| >= 0.2, p < 0.05
-# Total: 8 features
-
-feat_real_ratio	-11.0239
-feat_num_exclamation	0.5584
-feat_avg_word_length	-0.4276
-feat_num_question	0.3922
-feat_is_evening	0.3426
-feat_num_urls	-0.2309
-feat_digit_ratio	-0.2253
-feat_num_sentences	0.2085
+feat_avg_word_length
+feat_comment_ratio
+feat_digit_ratio
+feat_fake_ratio
+feat_hour_cos
+feat_hour_sin
+feat_is_evening
+feat_like_ratio
+feat_num_exclamation
+feat_num_question
+feat_num_sentences
+feat_num_urls

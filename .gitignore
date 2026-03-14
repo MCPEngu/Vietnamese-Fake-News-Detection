@@ -15,16 +15,17 @@ Thumbs.db
 *.log
 
 # Models & Large Files (DO NOT PUSH)
-models/*.pkl
-models/*.joblib
-models/*.pt
-models/*.bin
-models/*.h5
+model/
+*.pkl
+*.joblib
+*.pt
+*.bin
+*.h5
 *.onnx
+*.safetensors
 
 # Embeddings & Encoded Data (~130MB)
 data/encoded/
-data/reduced/
 
 # Results (generated)
 results/
@@ -39,3 +40,4 @@ results/
 
 # Server data
 server/data/
+server/group_files/

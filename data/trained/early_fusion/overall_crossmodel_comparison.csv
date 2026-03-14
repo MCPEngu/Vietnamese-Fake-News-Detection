@@ -1,0 +1,9 @@
+comparison,variant,model1,model2,t_stat,p_value,mean_diff,significant,winner
+LogReg vs LightGBM,B1_is_evening,logreg,lgbm,-1.895978455764653,0.09046784709854777,-0.016356723237720083,False,lgbm
+LogReg vs LightGBM,B1_hour_sin_cos,logreg,lgbm,-1.6361638740083189,0.1362333573068651,-0.017973197771125826,False,lgbm
+LogReg vs LightGBM,B2_is_evening,logreg,lgbm,-0.053869656710913344,0.9582158390212726,-0.00022402166013879565,False,lgbm
+LogReg vs LightGBM,B2_hour_sin_cos,logreg,lgbm,-2.0934278483608177,0.06581637497659039,-0.0074985373972079605,False,lgbm
+Attn+LogReg vs Attn+LightGBM,B1_is_evening,attn_logreg,attn_lgbm,0.1914204433505252,0.8524450606352264,0.0020078571924809774,False,attn_logreg
+Attn+LogReg vs Attn+LightGBM,B1_hour_sin_cos,attn_logreg,attn_lgbm,1.772560710878557,0.1100610227212845,0.014521041949110525,False,attn_logreg
+Attn+LogReg vs Attn+LightGBM,B2_is_evening,attn_logreg,attn_lgbm,-1.902744742229872,0.08949441064083387,-0.012280451306045492,False,attn_lgbm
+Attn+LogReg vs Attn+LightGBM,B2_hour_sin_cos,attn_logreg,attn_lgbm,0.6537539846932048,0.5296176625124595,0.0037332147204977018,False,attn_logreg

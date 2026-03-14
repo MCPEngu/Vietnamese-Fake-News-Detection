@@ -1,15 +1,13 @@
 /**
- * Popup Script
- * Xử lý UI và tương tác với background.js
+ * Popup Script - Real-time updates
  */
 
 const API_ENDPOINT = "http://localhost:8000";
 
 // DOM Elements
-let enableToggle, modeRadios, groupInfo, currentGroup;
-let statTotal, statReal, statFake, resetStatsBtn;
-let manualText, analyzeBtn, manualResult, resultText, resultConfidence;
-let serverStatus;
+let enableToggle, contextIcon, contextMode, groupDetail, groupId;
+let statTotal, statReal, statFake, barReal, barFake, resetStatsBtn;
+let serverStatus, statusDot;
 
 // ============================================================================
 // INITIALIZATION
@@ -18,59 +16,41 @@ document.addEventListener('DOMContentLoaded', () => {
   initDOMReferences();
   loadSettings();
   loadStats();
+  loadContext();
   checkServerStatus();
   setupEventListeners();
+  setupRealtimeUpdates();
 });
 
 function initDOMReferences() {
   enableToggle = document.getElementById('enable-toggle');
-  modeRadios = document.querySelectorAll('input[name="mode"]');
-  groupInfo = document.getElementById('group-info');
-  currentGroup = document.getElementById('current-group');
+  contextIcon = document.getElementById('context-icon');
+  contextMode = document.getElementById('context-mode');
+  groupDetail = document.getElementById('group-detail');
+  groupId = document.getElementById('group-id');
   
   statTotal = document.getElementById('stat-total');
   statReal = document.getElementById('stat-real');
   statFake = document.getElementById('stat-fake');
+  barReal = document.getElementById('bar-real');
+  barFake = document.getElementById('bar-fake');
   resetStatsBtn = document.getElementById('reset-stats');
   
-  manualText = document.getElementById('manual-text');
-  analyzeBtn = document.getElementById('analyze-btn');
-  manualResult = document.getElementById('manual-result');
-  resultText = document.getElementById('result-text');
-  resultConfidence = document.getElementById('result-confidence');
-  
   serverStatus = document.getElementById('server-status');
+  statusDot = document.getElementById('status-dot');
 }
 
 // ============================================================================
 // SETTINGS
 // ============================================================================
 function loadSettings() {
-  chrome.storage.sync.get(['enabled', 'mode', 'groupId'], (data) => {
-    // Enable toggle
+  chrome.storage.sync.get(['enabled'], (data) => {
     enableToggle.checked = data.enabled !== false;
-    
-    // Mode
-    const mode = data.mode || 'feed';
-    document.querySelector(`input[name="mode"][value="${mode}"]`).checked = true;
-    
-    // Group info
-    if (mode === 'group' && data.groupId) {
-      groupInfo.classList.remove('hidden');
-      currentGroup.textContent = data.groupId;
-    } else {
-      groupInfo.classList.add('hidden');
-    }
   });
 }
 
-function saveSettings() {
-  const mode = document.querySelector('input[name="mode"]:checked').value;
-  const enabled = enableToggle.checked;
-  
-  chrome.storage.sync.set({ enabled, mode }, () => {
-    console.log('[Popup] Settings saved');
-  });
+function saveEnabled(enabled) {
+  chrome.storage.sync.set({ enabled });
   
   // Notify content script
   chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
@@ -78,9 +58,34 @@ function saveSettings() {
       chrome.tabs.sendMessage(tabs[0].id, {
         action: 'toggleEnabled',
         enabled: enabled
-      });
+      }).catch(() => {});
     }
   });
+}
+
+// ============================================================================
+// CONTEXT
+// ============================================================================
+function loadContext() {
+  // Lấy context từ storage (reliable hơn background memory)
+  chrome.storage.local.get(['currentContext'], (data) => {
+    console.log(`[Popup] loadContext from storage:`, data);
+    const context = data.currentContext || { mode: "feed", groupId: null };
+    updateContextUI(context);
+  });
+}
+
+function updateContextUI(context) {
+  if (context.mode === 'group' && context.groupId) {
+    contextIcon.textContent = '👥';
+    contextMode.textContent = 'Nhóm';
+    groupId.textContent = `ID: ${context.groupId}`;
+    groupDetail.classList.remove('hidden');
+  } else {
+    contextIcon.textContent = '📰';
+    contextMode.textContent = 'Feed';
+    groupDetail.classList.add('hidden');
+  }
 }
 
 // ============================================================================
@@ -88,11 +93,35 @@ function saveSettings() {
 // ============================================================================
 function loadStats() {
   chrome.storage.sync.get(['stats'], (data) => {
-    const stats = data.stats || { total: 0, real: 0, fake: 0 };
-    statTotal.textContent = stats.total;
-    statReal.textContent = stats.real;
-    statFake.textContent = stats.fake;
+    updateStatsUI(data.stats || { total: 0, real: 0, fake: 0 });
   });
+}
+
+function updateStatsUI(stats) {
+  // Animate number changes
+  animateNumber(statTotal, stats.total);
+  animateNumber(statReal, stats.real);
+  animateNumber(statFake, stats.fake);
+  
+  // Update progress bar
+  const total = stats.total || 1; // Avoid division by zero
+  const realPercent = (stats.real / total) * 100;
+  const fakePercent = (stats.fake / total) * 100;
+  
+  barReal.style.width = `${realPercent}%`;
+  barFake.style.width = `${fakePercent}%`;
+}
+
+function animateNumber(element, newValue) {
+  const current = parseInt(element.textContent) || 0;
+  if (current === newValue) return;
+  
+  // Simple animation
+  element.textContent = newValue;
+  element.style.transform = 'scale(1.2)';
+  setTimeout(() => {
+    element.style.transform = 'scale(1)';
+  }, 150);
 }
 
 function resetStats() {
@@ -100,66 +129,7 @@ function resetStats() {
     stats: { total: 0, real: 0, fake: 0 }
   }, () => {
     loadStats();
-    console.log('[Popup] Stats reset');
   });
-}
-
-// ============================================================================
-// MANUAL ANALYSIS
-// ============================================================================
-async function analyzeManualText() {
-  const text = manualText.value.trim();
-  
-  if (!text || text.length < 10) {
-    alert('Vui lòng nhập nội dung cần phân tích (ít nhất 10 ký tự)');
-    return;
-  }
-  
-  // Show loading
-  analyzeBtn.textContent = 'Đang phân tích...';
-  analyzeBtn.disabled = true;
-  
-  try {
-    const response = await fetch(`${API_ENDPOINT}/predict`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        content_text: text,
-        timestamp: new Date().toISOString(),
-        mode: 'feed'
-      })
-    });
-    
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}`);
-    }
-    
-    const result = await response.json();
-    displayManualResult(result);
-    
-  } catch (error) {
-    console.error('[Popup] Analysis error:', error);
-    alert('Lỗi kết nối server. Vui lòng kiểm tra server đang chạy.');
-  } finally {
-    analyzeBtn.textContent = 'Phân tích';
-    analyzeBtn.disabled = false;
-  }
-}
-
-function displayManualResult(result) {
-  manualResult.classList.remove('hidden', 'real', 'fake');
-  
-  if (result.label === 0) {
-    manualResult.classList.add('real');
-    resultText.textContent = '✓ Tin thật';
-  } else {
-    manualResult.classList.add('fake');
-    resultText.textContent = '⚠ Nghi ngờ tin giả';
-  }
-  
-  resultConfidence.textContent = `Độ tin cậy: ${(result.confidence * 100).toFixed(1)}%`;
 }
 
 // ============================================================================
@@ -173,48 +143,41 @@ async function checkServerStatus() {
     });
     
     if (response.ok) {
-      serverStatus.textContent = 'Online ✓';
-      serverStatus.classList.add('online');
-      serverStatus.classList.remove('offline');
+      serverStatus.textContent = 'Server Online';
+      statusDot.className = 'status-dot online';
     } else {
       throw new Error('Server error');
     }
-  } catch (error) {
-    serverStatus.textContent = 'Offline ✗';
-    serverStatus.classList.add('offline');
-    serverStatus.classList.remove('online');
+  } catch (e) {
+    serverStatus.textContent = 'Server Offline';
+    statusDot.className = 'status-dot offline';
   }
+}
+
+// ============================================================================
+// REAL-TIME UPDATES
+// ============================================================================
+function setupRealtimeUpdates() {
+  // Listen for storage changes (real-time stats + context update)
+  chrome.storage.onChanged.addListener((changes, namespace) => {
+    console.log(`[Popup] Storage changed: ${namespace}`, changes);
+    if (namespace === 'sync' && changes.stats) {
+      updateStatsUI(changes.stats.newValue);
+    }
+    if (namespace === 'local' && changes.currentContext) {
+      console.log(`[Popup] Context changed:`, changes.currentContext.newValue);
+      updateContextUI(changes.currentContext.newValue);
+    }
+  });
 }
 
 // ============================================================================
 // EVENT LISTENERS
 // ============================================================================
 function setupEventListeners() {
-  // Enable toggle
-  enableToggle.addEventListener('change', saveSettings);
-  
-  // Mode selection
-  modeRadios.forEach(radio => {
-    radio.addEventListener('change', (e) => {
-      if (e.target.value === 'group') {
-        groupInfo.classList.remove('hidden');
-      } else {
-        groupInfo.classList.add('hidden');
-      }
-      saveSettings();
-    });
+  enableToggle.addEventListener('change', (e) => {
+    saveEnabled(e.target.checked);
   });
   
-  // Reset stats
   resetStatsBtn.addEventListener('click', resetStats);
-  
-  // Manual analysis
-  analyzeBtn.addEventListener('click', analyzeManualText);
-  
-  // Enter key in textarea
-  manualText.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' && e.ctrlKey) {
-      analyzeManualText();
-    }
-  });
 }

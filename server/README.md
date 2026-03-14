@@ -1,17 +1,23 @@
-# 🖥️ Vietnamese Fake News Detection Server
+# Vietnamese Fake News Detection Server
 
-FastAPI backend xử lý prediction từ extension.
+FastAPI backend cho extension, dùng pipeline inference thật:
+`packet -> text processing -> embeddings -> LightGBM model -> update group history`.
 
-## 📁 Cấu trúc
+## Cấu trúc mới
 
 ```
 server/
-├── main.py              # FastAPI app + endpoints
-├── feature_extractor.py # Trích xuất features từ text
-├── user_history.py      # Quản lý lịch sử user (CSV)
-├── requirements.txt     # Dependencies
-└── data/                # Thư mục lưu data (auto-created)
-    └── user_history/    # CSV files cho mỗi nhóm
+├── main.py
+├── user_history.py
+├── requirements.txt
+├── data_processing/
+│   ├── feature_extraction_functions.py
+│   └── text_cleaning_functions.py
+├── model_runtime/
+│   ├── embedding_loader.py
+│   └── model_loader.py
+└── group_files/
+  └── group_<group_id>.csv
 ```
 
 ## 🚀 Cài đặt & Chạy
@@ -21,6 +27,7 @@ server/
 pip install -r requirements.txt
 
 # Chạy server
+cd server
 python main.py
 ```
 
@@ -43,7 +50,7 @@ Check server status.
 ```
 
 ### `POST /predict`
-Phân tích bài đăng.
+Phân tích bài đăng bằng model `B1_hour_sin_cos`.
 
 **Request:**
 ```json
@@ -52,7 +59,10 @@ Phân tích bài đăng.
   "timestamp": "2024-01-15T19:30:00Z",
   "mode": "feed",
   "user_id": null,
-  "group_id": null
+  "group_id": null,
+  "num_like": 100,
+  "num_cmt": 20,
+  "num_share": 10
 }
 ```
 
@@ -62,47 +72,41 @@ Phân tích bài đăng.
   "label": 0,
   "confidence": 0.85,
   "features": {
-    "feat_num_sentences": 3,
+    "feat_avg_word_length": 4.5,
+    "feat_comment_ratio": 0.2,
+    "feat_digit_ratio": 0.05,
+    "feat_fake_ratio": 0.1,
+    "feat_hour_cos": 0.5,
+    "feat_hour_sin": 0.866,
+    "feat_like_ratio": 0.7,
     "feat_num_exclamation": 2,
     "feat_num_question": 1,
-    "feat_avg_word_length": 4.5,
-    "feat_num_urls": 1,
-    "feat_digit_ratio": 0.05,
-    "feat_is_evening": 1,
-    "feat_real_ratio": 0.5
+    "feat_num_sentences": 3,
+    "feat_num_urls": 1
+  },
+  "model_info": {
+    "model_config": "B1_hour_sin_cos_lightgbm",
+    "input_vector_dim": 219,
+    "model_num_features": 219
   }
 }
 ```
 
-## 📊 Features được trích xuất
+### `POST /group/enter`
+Tạo file group nếu chưa tồn tại.
 
-| Feature | Nguồn | Mô tả |
-|---------|-------|-------|
-| `feat_num_sentences` | content_text | Số câu |
-| `feat_num_exclamation` | content_text | Số dấu ! |
-| `feat_num_question` | content_text | Số dấu ? |
-| `feat_avg_word_length` | content_text | Độ dài TB từ |
-| `feat_num_urls` | content_text | Số URL |
-| `feat_digit_ratio` | content_text | Tỷ lệ số |
-| `feat_is_evening` | timestamp | 18h-22h? |
-| `feat_real_ratio` | user_history | Tỷ lệ tin thật của user |
+### `POST /group/leave`
+Đánh dấu rời group.
 
-## 📂 User History (Chế độ Group)
+### `GET /group/{group_id}/stats`
+Lấy thống kê lịch sử của group.
 
-Mỗi nhóm có 1 file CSV riêng tại `data/user_history/group_{id}.csv`:
+## Group history format
+
+Mỗi group có 1 file CSV riêng tại `server/group_files/group_{id}.csv`:
 
 ```csv
-user_id,label,timestamp
-user_123,0,2024-01-15T10:30:00
-user_123,1,2024-01-15T11:45:00
-user_456,0,2024-01-15T12:00:00
+user_id,num_post,num_fake
+user_123,10,2
+user_456,4,1
 ```
-
-## 🔧 TODO
-
-- [ ] Tích hợp TF-IDF model thực
-- [ ] Tích hợp BERT embeddings
-- [ ] Load classifier đã train
-- [ ] Thêm caching cho performance
-- [ ] Thêm rate limiting
-- [ ] Thêm authentication

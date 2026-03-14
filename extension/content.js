@@ -1,382 +1,356 @@
 /**
- * Content Script - Inject vào Facebook
- * Chức năng: Đọc DOM → Lấy thông tin bài đăng → Gửi cho background.js
- * 
- * QUAN TRỌNG: Mỗi bài đăng = 1 ARTICLE container (div[role="article"])
- * Không tìm từng text element nhỏ → tránh 1 bài bị chia nhiều phần
+ * Content Script - Vietnamese Fake News Detector
+ * Inject vào Facebook để phát hiện tin giả
  */
 
 // ============================================================================
 // CONFIG & STATE
 // ============================================================================
 let extensionEnabled = true;
-let currentMode = "feed";
-let currentGroupId = null;
-const processedArticles = new Set(); // Track bằng article ID, không phải text
+let currentMode = "feed";       // "feed" hoặc "group"
+let currentGroupId = null;      // ID của group hiện tại (nếu có)
+let lastUrl = window.location.href;
 
 // ============================================================================
 // INITIALIZATION
 // ============================================================================
 function initialize() {
-  console.log("[Content] Initializing...");
-  
   loadSettings();
-  detectGroupContext();
+  detectContext();      // Detect context ban đầu
   startObserver();
-  
-  // Delay để đợi FB render xong
-  setTimeout(() => {
-    processExistingPosts();
-  }, 1500);
-  
-  console.log("[Content] Initialized successfully");
+  startUrlWatcher();    // Watch URL changes (SPA navigation)
+  setTimeout(processExistingPosts, 2000);
 }
 
 function loadSettings() {
-  chrome.storage.sync.get(["enabled", "mode", "groupId"], (data) => {
+  chrome.storage.sync.get(["enabled"], (data) => {
     extensionEnabled = data.enabled !== false;
-    currentMode = data.mode || "feed";
-    currentGroupId = data.groupId;
   });
 }
 
-function detectGroupContext() {
+/**
+ * Detect context từ URL hiện tại
+ * Gọi khi: init, URL change
+ */
+function detectContext() {
   const url = window.location.href;
-  const groupMatch = url.match(/facebook\.com\/groups\/([^\/\?]+)/);
+  const groupMatch = url.match(/facebook\.com\/groups\/([^\/\?#]+)/);
   
   if (groupMatch) {
-    currentGroupId = groupMatch[1];
-    currentMode = "group";
-    chrome.runtime.sendMessage({
-      action: "saveSettings",
-      data: { mode: "group", groupId: currentGroupId }
-    });
-    console.log("[Content] Group mode:", currentGroupId);
+    const newGroupId = groupMatch[1];
+    
+    // Nếu vào group MỚI (khác group cũ hoặc từ feed)
+    if (currentMode !== "group" || currentGroupId !== newGroupId) {
+      currentMode = "group";
+      currentGroupId = newGroupId;
+      
+      // Thông báo server: đã vào group
+      notifyGroupEnter(newGroupId);
+      console.log(`[FakeNews] Entered group: ${newGroupId}`);
+    }
   } else {
+    // Không phải group → feed mode
+    if (currentMode === "group") {
+      // Rời group → thông báo server
+      notifyGroupLeave(currentGroupId);
+      console.log(`[FakeNews] Left group: ${currentGroupId}`);
+    }
+    
     currentMode = "feed";
-    console.log("[Content] Feed mode");
+    currentGroupId = null;
   }
 }
 
-// ============================================================================
-// DOM OBSERVER - Đơn giản hóa, dùng interval scan
-// ============================================================================
-
-function startObserver() {
-  // Scan định kỳ mỗi 2 giây (đơn giản và hiệu quả hơn MutationObserver cho FB)
-  setInterval(() => {
-    if (extensionEnabled) {
-      processExistingPosts();
-    }
-  }, 2000);
+/**
+ * Watch URL changes - Override History API + fallback polling
+ * Facebook dùng pushState/replaceState khi navigate
+ */
+function startUrlWatcher() {
+  // Override pushState
+  const originalPushState = history.pushState;
+  history.pushState = function(...args) {
+    originalPushState.apply(this, args);
+    onUrlChange();
+  };
   
-  // Scan khi scroll
+  // Override replaceState  
+  const originalReplaceState = history.replaceState;
+  history.replaceState = function(...args) {
+    originalReplaceState.apply(this, args);
+    onUrlChange();
+  };
+  
+  // Listen popstate (back/forward button)
+  window.addEventListener('popstate', onUrlChange);
+  
+  // FALLBACK: Poll URL mỗi 1s (Facebook đôi khi không trigger History API)
+  setInterval(() => {
+    if (window.location.href !== lastUrl) {
+      console.log(`[FakeNews] URL changed (poll): ${lastUrl} → ${window.location.href}`);
+      onUrlChange();
+    }
+  }, 1000);
+}
+
+function onUrlChange() {
+  if (window.location.href !== lastUrl) {
+    console.log(`[FakeNews] onUrlChange: ${lastUrl} → ${window.location.href}`);
+    lastUrl = window.location.href;
+    detectContext();
+  }
+}
+
+/**
+ * Gửi thông báo đến server khi vào group
+ */
+function notifyGroupEnter(groupId) {
+  if (!chrome.runtime?.id) return;
+  
+  chrome.runtime.sendMessage({
+    action: "enterGroup",
+    groupId: groupId
+  });
+}
+
+/**
+ * Gửi thông báo đến server khi rời group
+ */
+function notifyGroupLeave(groupId) {
+  if (!chrome.runtime?.id || !groupId) return;
+  
+  chrome.runtime.sendMessage({
+    action: "leaveGroup", 
+    groupId: groupId
+  });
+}
+
+// ============================================================================
+// DOM OBSERVER
+// ============================================================================
+function startObserver() {
+  // Scan định kỳ mỗi 3 giây
+  setInterval(() => {
+    if (extensionEnabled) processExistingPosts();
+  }, 3000);
+  
+  // Scan khi scroll (debounced)
   let scrollTimeout;
   window.addEventListener('scroll', () => {
     clearTimeout(scrollTimeout);
     scrollTimeout = setTimeout(() => {
-      if (extensionEnabled) {
-        processExistingPosts();
-      }
+      if (extensionEnabled) processExistingPosts();
     }, 500);
+  }, { passive: true });
+}
+
+// ============================================================================
+// POST EXTRACTION
+// ============================================================================
+function findArticles() {
+  const storyMessages = document.querySelectorAll('[data-ad-rendering-role="story_message"]');
+  const posts = [];
+  
+  storyMessages.forEach((storyMsg, index) => {
+    // Tìm container cha
+    const container = storyMsg.closest('[data-pagelet]') || 
+                      storyMsg.closest('.x1yztbdb') ||
+                      storyMsg.parentElement?.parentElement?.parentElement?.parentElement ||
+                      storyMsg;
+    
+    posts.push({ element: container, storyMessage: storyMsg, index });
   });
   
-  console.log("[Content] Observer started (interval mode)");
+  // Fallback: tìm div[dir="auto"] có text dài
+  if (posts.length === 0) {
+    const dirAutoDivs = document.querySelectorAll('div[dir="auto"]');
+    dirAutoDivs.forEach((div, index) => {
+      const text = div.textContent?.trim() || "";
+      if (text.length > 30 && !isMetadata(text)) {
+        const container = div.closest('[data-pagelet]') || div.parentElement?.parentElement;
+        if (container && !posts.some(p => p.element === container)) {
+          posts.push({ element: container || div, storyMessage: div, index });
+        }
+      }
+    });
+  }
+  
+  return posts;
 }
 
-// ============================================================================
-// POST EXTRACTION - TÌM ARTICLE CONTAINER (KHÔNG PHẢI TEXT ELEMENTS)
-// ============================================================================
-
-/**
- * Tìm tất cả ARTICLE containers - mỗi article = 1 bài đăng duy nhất
- */
-function findArticles() {
-  // Facebook dùng div[role="article"] cho mỗi bài đăng
-  return Array.from(document.querySelectorAll('div[role="article"]'));
-}
-
-/**
- * Tạo ID duy nhất cho article
- */
-function getArticleId(article) {
-  // Cách 1: Dùng aria-describedby (unique ID từ Facebook)
-  const ariaDescribedBy = article.getAttribute('aria-describedby');
-  if (ariaDescribedBy) {
-    return `fb-${ariaDescribedBy}`;
-  }
-  
-  // Cách 2: Tìm link đến post
-  const postLink = article.querySelector('a[href*="/posts/"], a[href*="permalink"], a[href*="story_fbid"]');
-  if (postLink) {
-    const href = postLink.getAttribute('href');
-    const match = href.match(/(\d{10,})/); // Tìm số dài (post ID)
-    if (match) {
-      return `fb-post-${match[1]}`;
-    }
-  }
-  
-  // Cách 3: Hash từ vị trí + text ngắn (fallback)
-  const rect = article.getBoundingClientRect();
-  const text = getArticleText(article);
-  if (text && text.length > 30) {
-    return `fb-hash-${hashString(text.substring(0, 100) + rect.top)}`;
-  }
-  
-  return null;
-}
-
-/**
- * Lấy TEXT CONTENT chính của bài đăng (không lấy comments)
- */
-function getArticleText(article) {
-  // Đánh dấu đã check article này
-  if (article.dataset.fakeNewsChecked === 'pending') {
-    return null; // Đang xử lý
-  }
-  
-  // Cách 1: Tìm div có data attribute đặc biệt (ưu tiên cao)
-  const messageDiv = article.querySelector('[data-ad-preview="message"]') ||
-                     article.querySelector('[data-ad-comet-preview="message"]') ||
-                     article.querySelector('[data-ad-rendering-role="story_message"]');
-  
-  if (messageDiv) {
-    return messageDiv.textContent?.trim() || "";
-  }
-  
-  // Cách 2: Tìm div[dir="auto"] có text dài nhất trong phần trên của article
-  // (phần dưới thường là comments)
-  const allDirAuto = article.querySelectorAll('div[dir="auto"]');
-  
-  let bestText = "";
-  let bestLength = 0;
-  
-  for (const div of allDirAuto) {
-    // Bỏ qua nếu nằm trong comment section
-    if (div.closest('[aria-label*="comment"], [aria-label*="bình luận"]')) {
-      continue;
-    }
-    
-    const text = div.textContent?.trim() || "";
-    
-    // Bỏ qua text quá ngắn hoặc là metadata
-    if (text.length < 30 || isMetadata(text)) {
-      continue;
-    }
-    
-    // Lấy text dài nhất (thường là nội dung chính)
-    if (text.length > bestLength) {
-      bestText = text;
-      bestLength = text.length;
-    }
-  }
-  
-  return bestText;
-}
-
-/**
- * Kiểm tra text có phải metadata (time, reactions, etc.)
- */
 function isMetadata(text) {
   const first50 = text.substring(0, 50);
-  const metaPatterns = [
-    /^\d+\s*(giờ|phút|ngày|tuần|tháng|giây)/i,
-    /^(Like|Comment|Share|Thích|Bình luận|Chia sẻ)/i,
-    /^\d+[KMk]?\s*(likes?|comments?|shares?|lượt)/i,
-    /^(Sponsored|Được tài trợ)/i,
-    /^(See more|Xem thêm|See less|Thu gọn)/i,
-    /^(Write a comment|Viết bình luận)/i,
-    /^All reactions/i,
-  ];
-  
-  return metaPatterns.some(pattern => pattern.test(first50));
+  return /^\d+\s*(giờ|phút|ngày|tuần|tháng|giây)/i.test(first50) ||
+         /^(Like|Comment|Share|Thích|Bình luận|Chia sẻ)/i.test(first50) ||
+         /^\d+[KMk]?\s*(likes?|comments?|shares?|lượt)/i.test(first50) ||
+         /^(Sponsored|Được tài trợ|See more|Xem thêm)/i.test(first50);
 }
 
-/**
- * Process existing posts on page
- */
+// ============================================================================
+// PROCESS POSTS
+// ============================================================================
 function processExistingPosts() {
-  const articles = findArticles();
-  let processedCount = 0;
+  const posts = findArticles();
   
-  for (const article of articles) {
-    // Bỏ qua nếu đã có indicator
-    if (article.querySelector('.fake-news-indicator')) {
-      continue;
-    }
+  for (const post of posts) {
+    const { element: container, storyMessage } = post;
+    const text = storyMessage.textContent?.trim() || "";
     
-    const articleId = getArticleId(article);
+    // Skip conditions
+    if (container.querySelector('.fake-news-indicator')) continue;
+    if (storyMessage.parentElement?.querySelector('.fake-news-indicator')) continue;
+    if (text.length < 5) continue;
+    if (container.dataset.fakeNewsChecked === 'pending') continue;
     
-    if (!articleId || processedArticles.has(articleId)) {
-      continue;
-    }
-    
-    // Kiểm tra article có đang hiển thị trên màn hình không
-    const rect = article.getBoundingClientRect();
-    const isVisible = rect.top < window.innerHeight + 200 && rect.bottom > -200;
-    
-    if (!isVisible) {
-      continue; // Chỉ process bài gần viewport
-    }
-    
-    // Đánh dấu đang xử lý
-    article.dataset.fakeNewsChecked = 'pending';
-    processedArticles.add(articleId);
-    
-    processArticle(article, articleId);
-    processedCount++;
-  }
-  
-  if (processedCount > 0) {
-    console.log(`[Content] Processed ${processedCount} new articles`);
+    // Process
+    container.dataset.fakeNewsChecked = 'pending';
+    processPost(container, storyMessage, text);
   }
 }
 
-/**
- * Process một article
- */
-function processArticle(article, articleId) {
-  const text = getArticleText(article);
-  
-  if (!text || text.length < 30) {
-    console.log(`[Content] Skip article: text too short or empty`);
-    article.dataset.fakeNewsChecked = 'skipped';
+function processPost(container, storyMessage, text) {
+  if (!chrome.runtime?.id) {
+    container.dataset.fakeNewsChecked = '';
     return;
   }
   
-  console.log(`[Content] Processing: "${text.substring(0, 50)}..."`);
-  
-  // Tạo post data
+  // Tạo postData - khác nhau tùy mode
   const postData = {
     content_text: text,
-    timestamp: extractTimestamp(article),
-    user_id: currentMode === "group" ? extractUserId(article) : null
+    timestamp: new Date().toISOString(),
+    mode: currentMode
   };
+
+  const engagement = extractEngagement(container);
+  postData.num_like = engagement.num_like;
+  postData.num_cmt = engagement.num_cmt;
+  postData.num_share = engagement.num_share;
   
-  // Gửi đến background
-  if (!chrome.runtime?.id) {
-    console.warn("[Content] Extension context invalidated");
-    return;
+  // Group mode: extract user_id từ post
+  if (currentMode === "group") {
+    postData.user_id = extractUserId(container);
   }
   
-  try {
-    chrome.runtime.sendMessage(
-      { action: "analyzePost", data: postData },
-      (response) => {
-        if (chrome.runtime.lastError) {
-          console.error("[Content] Runtime error:", chrome.runtime.lastError.message);
-          article.dataset.fakeNewsChecked = 'error';
-          return;
-        }
-        
-        if (response?.success) {
-          displayResult(article, response.data);
-          article.dataset.fakeNewsChecked = 'done';
-        } else {
-          console.error("[Content] Analysis failed:", response?.error);
-          article.dataset.fakeNewsChecked = 'error';
-        }
+  chrome.runtime.sendMessage(
+    { action: "analyzePost", data: postData },
+    (response) => {
+      if (chrome.runtime.lastError) {
+        container.dataset.fakeNewsChecked = '';
+        return;
       }
-    );
-  } catch (e) {
-    console.error("[Content] sendMessage error:", e);
-    article.dataset.fakeNewsChecked = 'error';
+      
+      if (response?.success) {
+        displayResult(container, storyMessage, response.data);
+        container.dataset.fakeNewsChecked = 'done';
+      } else {
+        container.dataset.fakeNewsChecked = '';
+      }
+    }
+  );
+}
+
+function parseCompactNumber(text) {
+  if (!text) return 0;
+  const raw = String(text).trim().toLowerCase();
+  const normalized = raw.replace(/,/g, '.').replace(/\s+/g, '');
+  const match = normalized.match(/(\d+(?:\.\d+)?)([kmb]|nghìn|ngan|triệu|trieu|tỷ|ty)?/i);
+  if (!match) return 0;
+
+  const value = parseFloat(match[1]);
+  const suffix = (match[2] || '').toLowerCase();
+  if (Number.isNaN(value)) return 0;
+
+  if (suffix === 'k' || suffix === 'nghìn' || suffix === 'ngan') return Math.round(value * 1_000);
+  if (suffix === 'm' || suffix === 'triệu' || suffix === 'trieu') return Math.round(value * 1_000_000);
+  if (suffix === 'b' || suffix === 'tỷ' || suffix === 'ty') return Math.round(value * 1_000_000_000);
+  return Math.round(value);
+}
+
+function extractEngagement(container) {
+  const text = (container?.innerText || '').replace(/\s+/g, ' ');
+  if (!text) {
+    return { num_like: 0, num_cmt: 0, num_share: 0 };
   }
+
+  let numLike = 0;
+  let numCmt = 0;
+  let numShare = 0;
+
+  const likePatterns = [
+    /(\d+(?:[\.,]\d+)?\s*(?:k|m|b|nghìn|ngan|triệu|trieu|tỷ|ty)?)\s*(?:lượt\s*)?(?:thích|like)s?/i,
+  ];
+  const cmtPatterns = [
+    /(\d+(?:[\.,]\d+)?\s*(?:k|m|b|nghìn|ngan|triệu|trieu|tỷ|ty)?)\s*(?:bình\s*luận|comment)s?/i,
+  ];
+  const sharePatterns = [
+    /(\d+(?:[\.,]\d+)?\s*(?:k|m|b|nghìn|ngan|triệu|trieu|tỷ|ty)?)\s*(?:lượt\s*)?(?:chia\s*sẻ|share)s?/i,
+  ];
+
+  for (const pattern of likePatterns) {
+    const m = text.match(pattern);
+    if (m) {
+      numLike = parseCompactNumber(m[1]);
+      break;
+    }
+  }
+  for (const pattern of cmtPatterns) {
+    const m = text.match(pattern);
+    if (m) {
+      numCmt = parseCompactNumber(m[1]);
+      break;
+    }
+  }
+  for (const pattern of sharePatterns) {
+    const m = text.match(pattern);
+    if (m) {
+      numShare = parseCompactNumber(m[1]);
+      break;
+    }
+  }
+
+  return {
+    num_like: numLike,
+    num_cmt: numCmt,
+    num_share: numShare,
+  };
 }
 
 /**
- * Extract timestamp từ article
+ * Extract user ID từ post container (dùng cho group mode)
  */
-function extractTimestamp(article) {
-  // Tìm link chứa thời gian (thường là link to post)
-  const timeLinks = article.querySelectorAll('a[href*="/posts/"], a[href*="permalink"], a[href*="story_fbid"]');
-  for (const link of timeLinks) {
-    const spans = link.querySelectorAll('span');
-    for (const span of spans) {
-      const text = span.textContent?.trim();
-      if (text && /^\d+\s*(giờ|phút|ngày|h|m|d)/i.test(text)) {
-        return parseTimestamp(text);
+function extractUserId(container) {
+  // Tìm link profile của người đăng
+  const userLinks = container.querySelectorAll('a[href*="/user/"], a[href*="profile.php"], a[role="link"][href*="facebook.com/"]');
+  
+  for (const link of userLinks) {
+    const href = link.getAttribute('href') || '';
+    
+    // Pattern 1: /user/123456789
+    const userIdMatch = href.match(/\/user\/(\d+)/);
+    if (userIdMatch) return userIdMatch[1];
+    
+    // Pattern 2: profile.php?id=123456789
+    const profileMatch = href.match(/profile\.php\?id=(\d+)/);
+    if (profileMatch) return profileMatch[1];
+    
+    // Pattern 3: facebook.com/username (không phải groups, posts, etc)
+    if (!href.includes('/groups/') && !href.includes('/posts/') && !href.includes('/photos/')) {
+      const usernameMatch = href.match(/facebook\.com\/([a-zA-Z0-9.]+)(?:\/|\?|$)/);
+      if (usernameMatch && usernameMatch[1] !== 'groups') {
+        return usernameMatch[1]; // Return username nếu không có numeric ID
       }
     }
   }
-  return new Date().toISOString();
-}
-
-/**
- * Extract user ID từ article
- */
-function extractUserId(article) {
-  const userLinks = article.querySelectorAll('a[href*="/user/"], a[href*="profile.php"], a[href*="facebook.com/"]');
-  for (const link of userLinks) {
-    const href = link.getAttribute('href');
-    const match = href.match(/user\/(\d+)|id=(\d+)/);
-    if (match) return match[1] || match[2];
-  }
+  
   return null;
 }
 
-/**
- * Parse timestamp text thành ISO format
- */
-function parseTimestamp(timeText) {
-  if (!timeText) return new Date().toISOString();
-  
-  const now = new Date();
-  
-  if (/phút|m\b/i.test(timeText)) {
-    const mins = parseInt(timeText) || 0;
-    return new Date(now - mins * 60000).toISOString();
-  }
-  
-  if (/giờ|h\b/i.test(timeText)) {
-    const hours = parseInt(timeText) || 0;
-    return new Date(now - hours * 3600000).toISOString();
-  }
-  
-  if (/ngày|d\b/i.test(timeText)) {
-    const days = parseInt(timeText) || 0;
-    return new Date(now - days * 86400000).toISOString();
-  }
-  
-  if (/hôm qua|yesterday/i.test(timeText)) {
-    return new Date(now - 86400000).toISOString();
-  }
-  
-  return now.toISOString();
-}
-
-/**
- * Hash string to create ID
- */
-function hashString(str) {
-  let hash = 0;
-  for (let i = 0; i < str.length; i++) {
-    const char = str.charCodeAt(i);
-    hash = ((hash << 5) - hash) + char;
-    hash = hash & hash;
-  }
-  return Math.abs(hash).toString(16);
-}
-
 // ============================================================================
-// DISPLAY RESULTS - Hiển thị KẾT QUẢ trên ARTICLE CONTAINER
+// DISPLAY RESULTS
 // ============================================================================
-
-/**
- * Hiển thị kết quả phân tích trên article
- */
-function displayResult(article, result) {
-  if (!article || !document.body.contains(article)) {
-    console.warn("[Content] Article no longer in DOM");
-    return;
-  }
+function displayResult(container, storyMessage, result) {
+  if (!container || !document.body.contains(container)) return;
+  if (container.querySelector('.fake-news-indicator')) return;
   
-  // Kiểm tra đã có indicator chưa (tránh duplicate)
-  if (article.querySelector('.fake-news-indicator')) {
-    return;
-  }
-  
-  // Tạo indicator element
   const indicator = document.createElement('div');
   indicator.className = 'fake-news-indicator';
   
@@ -387,6 +361,7 @@ function displayResult(article, result) {
       <span class="text">Tin thật</span>
       <span class="confidence">${(result.confidence * 100).toFixed(0)}%</span>
     `;
+    container.style.borderLeft = '4px solid #4CAF50';
   } else {
     indicator.classList.add('fake');
     indicator.innerHTML = `
@@ -394,21 +369,17 @@ function displayResult(article, result) {
       <span class="text">Nghi ngờ tin giả</span>
       <span class="confidence">${(result.confidence * 100).toFixed(0)}%</span>
     `;
+    container.style.borderLeft = '4px solid #f44336';
   }
   
-  // Chèn indicator vào ĐẦU article
-  article.style.position = 'relative';
-  article.insertBefore(indicator, article.firstChild);
-  
-  // Thêm border cho article 
-  if (result.label === 0) {
-    article.style.borderLeft = '4px solid #4CAF50';
+  // Chèn indicator
+  if (storyMessage?.parentElement && document.body.contains(storyMessage)) {
+    storyMessage.parentElement.insertBefore(indicator, storyMessage);
   } else {
-    article.style.borderLeft = '4px solid #f44336';
+    container.insertBefore(indicator, container.firstChild);
   }
-  article.style.paddingLeft = '8px';
   
-  console.log(`[Content] Displayed: ${result.label === 0 ? 'REAL' : 'FAKE'} (${(result.confidence * 100).toFixed(0)}%)`);
+  container.style.paddingLeft = '8px';
 }
 
 // ============================================================================
@@ -418,13 +389,10 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   switch (request.action) {
     case "toggleEnabled":
       extensionEnabled = request.enabled;
-      console.log("[Content] Extension", extensionEnabled ? "enabled" : "disabled");
       sendResponse({ success: true });
       break;
       
     case "reprocessPosts":
-      processedArticles.clear();
-      // Xóa tất cả indicators hiện có
       document.querySelectorAll('.fake-news-indicator').forEach(el => el.remove());
       document.querySelectorAll('[data-fake-news-checked]').forEach(el => {
         delete el.dataset.fakeNewsChecked;

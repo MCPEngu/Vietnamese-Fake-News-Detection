@@ -12,24 +12,38 @@ const API_ENDPOINT = "http://localhost:8000";
 // MESSAGE LISTENER
 // ============================================================================
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-  console.log("[Background] Received message:", request.action);
-  
   switch (request.action) {
     case "analyzePost":
       handleAnalyzePost(request.data)
         .then(result => sendResponse({ success: true, data: result }))
         .catch(error => sendResponse({ success: false, error: error.message }));
-      return true; // Keep channel open for async response
-      
-    case "getSettings":
-      chrome.storage.sync.get(["mode", "groupId"], (data) => {
-        sendResponse({ success: true, data: data });
-      });
       return true;
       
-    case "saveSettings":
-      chrome.storage.sync.set(request.data, () => {
-        sendResponse({ success: true });
+    case "enterGroup":
+      // Lưu vào storage (để persist qua service worker restarts)
+      console.log(`[BG] enterGroup: ${request.groupId}`);
+      chrome.storage.local.set({ 
+        currentContext: { mode: "group", groupId: request.groupId }
+      });
+      notifyServerGroupEnter(request.groupId);
+      sendResponse({ success: true });
+      return true;
+      
+    case "leaveGroup":
+      console.log(`[BG] leaveGroup: ${request.groupId}`);
+      chrome.storage.local.set({ 
+        currentContext: { mode: "feed", groupId: null }
+      });
+      notifyServerGroupLeave(request.groupId);
+      sendResponse({ success: true });
+      return true;
+      
+    case "getContext":
+      chrome.storage.local.get(['currentContext'], (data) => {
+        sendResponse({ 
+          success: true, 
+          data: data.currentContext || { mode: "feed", groupId: null }
+        });
       });
       return true;
       
@@ -37,6 +51,36 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       sendResponse({ success: false, error: "Unknown action" });
   }
 });
+
+/**
+ * Notify server khi user vào group (tạo file thống kê nếu chưa có)
+ */
+async function notifyServerGroupEnter(groupId) {
+  try {
+    await fetch(`${API_ENDPOINT}/group/enter`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ group_id: groupId })
+    });
+  } catch (e) {
+    console.error("[BG] notifyServerGroupEnter failed:", e);
+  }
+}
+
+/**
+ * Notify server khi user rời group
+ */
+async function notifyServerGroupLeave(groupId) {
+  try {
+    await fetch(`${API_ENDPOINT}/group/leave`, {
+      method: "POST", 
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ group_id: groupId })
+    });
+  } catch (e) {
+    console.error("[BG] notifyServerGroupLeave failed:", e);
+  }
+}
 
 // ============================================================================
 // API HANDLERS
@@ -49,23 +93,25 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
  */
 async function handleAnalyzePost(postData) {
   try {
-    // Lấy settings hiện tại
-    const settings = await getSettings();
+    // Lấy context từ storage
+    const storageData = await chrome.storage.local.get(['currentContext']);
+    const currentContext = storageData.currentContext || { mode: "feed", groupId: null };
     
     // Chuẩn bị payload
     const payload = {
       content_text: postData.content_text,
       timestamp: postData.timestamp,
-      mode: settings.mode || "feed", // "feed" hoặc "group"
+      mode: postData.mode || currentContext.mode,
+      num_like: Number(postData.num_like || 0),
+      num_cmt: Number(postData.num_cmt || 0),
+      num_share: Number(postData.num_share || 0)
     };
     
     // Nếu ở chế độ group, thêm user_id và group_id
-    if (settings.mode === "group") {
+    if (payload.mode === "group" && currentContext.groupId) {
       payload.user_id = postData.user_id;
-      payload.group_id = settings.groupId;
+      payload.group_id = currentContext.groupId;
     }
-    
-    console.log("[Background] Sending to API:", payload);
     
     // Gọi API
     const response = await fetch(`${API_ENDPOINT}/predict`, {
@@ -77,32 +123,21 @@ async function handleAnalyzePost(postData) {
     });
     
     if (!response.ok) {
-      throw new Error(`API Error: ${response.status}`);
+      const errText = await response.text();
+      throw new Error(`API Error ${response.status}: ${errText}`);
     }
     
     const result = await response.json();
-    console.log("[Background] API Response:", result);
-    
+
     // Cập nhật stats
     updateStats(result.label);
     
     return result;
     
   } catch (error) {
-    console.error("[Background] API Error:", error);
+    console.error("[BG] handleAnalyzePost failed:", error, "postData:", postData);
     throw error;
   }
-}
-
-/**
- * Lấy settings từ storage
- */
-function getSettings() {
-  return new Promise((resolve) => {
-    chrome.storage.sync.get(["mode", "groupId"], (data) => {
-      resolve(data);
-    });
-  });
 }
 
 /**
@@ -124,7 +159,6 @@ function updateStats(label) {
 // ============================================================================
 // INITIALIZATION
 // ============================================================================
-console.log("[Background] Service worker started");
 
 // Set default settings on install
 chrome.runtime.onInstalled.addListener(() => {
@@ -134,5 +168,4 @@ chrome.runtime.onInstalled.addListener(() => {
     enabled: true,
     stats: { total: 0, real: 0, fake: 0 }
   });
-  console.log("[Background] Extension installed, default settings applied");
 });

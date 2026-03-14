@@ -10,85 +10,63 @@
   <div class="container">
     <!-- Header -->
     <header class="header">
+      <div class="logo">🛡️</div>
       <h1>Fake News Detector</h1>
-      <p class="subtitle">Phát hiện tin giả trên Facebook</p>
     </header>
 
-    <!-- Toggle Enable -->
-    <div class="toggle-section">
+    <!-- Toggle -->
+    <div class="card toggle-card">
+      <span class="toggle-label">Extension</span>
       <label class="toggle">
         <input type="checkbox" id="enable-toggle" checked>
         <span class="slider"></span>
       </label>
-      <span>Bật extension</span>
     </div>
 
-    <!-- Mode Selection -->
-    <section class="section">
-      <h2>Chế độ hoạt động</h2>
-      <div class="mode-selector">
-        <label class="mode-option">
-          <input type="radio" name="mode" value="feed" checked>
-          <div class="mode-card">
-            <span class="mode-icon">📰</span>
-            <span class="mode-name">Feed</span>
-            <span class="mode-desc">Bài random, không lưu user</span>
-          </div>
-        </label>
-        <label class="mode-option">
-          <input type="radio" name="mode" value="group">
-          <div class="mode-card">
-            <span class="mode-icon">👥</span>
-            <span class="mode-name">Nhóm</span>
-            <span class="mode-desc">Lưu lịch sử user theo nhóm</span>
-          </div>
-        </label>
+    <!-- Context Info -->
+    <div class="card context-card">
+      <div class="context-header">
+        <span class="context-icon" id="context-icon">📰</span>
+        <span class="context-mode" id="context-mode">Feed</span>
       </div>
-      
-      <!-- Group Info (shown when in group mode) -->
-      <div id="group-info" class="group-info hidden">
-        <span class="label">Nhóm hiện tại:</span>
-        <span id="current-group" class="value">-</span>
+      <div class="context-detail hidden" id="group-detail">
+        <div class="group-id" id="group-id">-</div>
       </div>
-    </section>
+    </div>
 
-    <!-- Statistics -->
-    <section class="section">
-      <h2>Thống kê</h2>
+    <!-- Stats -->
+    <div class="card stats-card">
+      <div class="stats-header">
+        <span>Thống kê phiên</span>
+        <button class="btn-reset" id="reset-stats" title="Đặt lại">↺</button>
+      </div>
       <div class="stats-grid">
-        <div class="stat-card">
+        <div class="stat">
           <span class="stat-value" id="stat-total">0</span>
           <span class="stat-label">Tổng</span>
         </div>
-        <div class="stat-card real">
+        <div class="stat real">
           <span class="stat-value" id="stat-real">0</span>
-          <span class="stat-label">Tin thật</span>
+          <span class="stat-label">Thật</span>
         </div>
-        <div class="stat-card fake">
+        <div class="stat fake">
           <span class="stat-value" id="stat-fake">0</span>
-          <span class="stat-label">Tin giả</span>
+          <span class="stat-label">Giả</span>
         </div>
       </div>
-      <button id="reset-stats" class="btn-secondary">Đặt lại thống kê</button>
-    </section>
-
-    <!-- Manual Analysis -->
-    <section class="section">
-      <h2>Phân tích thủ công</h2>
-      <textarea id="manual-text" placeholder="Nhập nội dung cần kiểm tra..."></textarea>
-      <button id="analyze-btn" class="btn-primary">Phân tích</button>
-      
-      <div id="manual-result" class="result hidden">
-        <div class="result-label">Kết quả:</div>
-        <div class="result-value" id="result-text">-</div>
-        <div class="result-confidence" id="result-confidence">-</div>
+      <div class="stats-bar">
+        <div class="bar-real" id="bar-real"></div>
+        <div class="bar-fake" id="bar-fake"></div>
       </div>
-    </section>
+    </div>
 
     <!-- Footer -->
     <footer class="footer">
-      <p>Vietnamese Fake News Detector v1.0</p>
-      <p class="small">Server: <span id="server-status">Đang kiểm tra...</span></p>
+      <div class="server-status">
+        <span class="status-dot" id="status-dot"></span>
+        <span id="server-status">Đang kiểm tra...</span>
+      </div>
+      <span class="version">v1.0</span>
     </footer>
   </div>
 
