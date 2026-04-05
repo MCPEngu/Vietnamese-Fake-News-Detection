@@ -17,6 +17,7 @@ lightgbm==4.5.0
 catboost==1.2.7
 gensim>=4.3.0
 nltk>=3.8.1
+thop>=0.1.1
 
 # Data Processing
 numpy==1.26.2
