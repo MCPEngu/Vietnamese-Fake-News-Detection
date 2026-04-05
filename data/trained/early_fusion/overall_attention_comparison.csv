@@ -1,9 +1,0 @@
-comparison,variant,base_model,attn_model,t_stat,p_value,mean_diff,significant,winner
-LogReg vs Attn+LogReg,B1_is_evening,logreg,attn_logreg,4.441791549886452,0.0016192942624201337,0.04626953199518924,True,base
-LogReg vs Attn+LogReg,B1_hour_sin_cos,logreg,attn_logreg,4.466580308363458,0.00156235170683873,0.05324477382462112,True,base
-LogReg vs Attn+LogReg,B2_is_evening,logreg,attn_logreg,4.419453993744876,0.001672509173044072,0.03291244902043311,True,base
-LogReg vs Attn+LogReg,B2_hour_sin_cos,logreg,attn_logreg,1.7092579487400599,0.12157410568691178,0.017806314325171102,False,base
-LightGBM vs Attn+LightGBM,B1_is_evening,lgbm,attn_lgbm,4.609608742792495,0.0012730077577103843,0.0646341124253903,True,base
-LightGBM vs Attn+LightGBM,B1_hour_sin_cos,lgbm,attn_lgbm,4.632861272689417,0.001231665118723874,0.08573901354485747,True,base
-LightGBM vs Attn+LightGBM,B2_is_evening,lgbm,attn_lgbm,2.2072441748093645,0.05469055855366182,0.020856019374526413,False,base
-LightGBM vs Attn+LightGBM,B2_hour_sin_cos,lgbm,attn_lgbm,2.9019793607647886,0.01753875887637853,0.029038066442876764,True,base

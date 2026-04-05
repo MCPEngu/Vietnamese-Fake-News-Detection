@@ -1,5 +1,0 @@
-comparison,model1,model2,t_stat,p_value,significant,mean_diff
-Baseline 1: is_evening vs hour_sin_cos,B1_is_evening,B1_hour_sin_cos,-0.26016649358441074,0.8005896199262392,False,-0.001070441097815511
-Baseline 2: is_evening vs hour_sin_cos,B2_is_evening,B2_hour_sin_cos,-0.5336767081724956,0.6064923304984641,False,-0.0016017780106682977
-is_evening: Baseline 1 vs Baseline 2,B1_is_evening,B2_is_evening,-15.159518216712135,1.0290419273662346e-07,True,-0.12462041061016871
-hour_sin_cos: Baseline 1 vs Baseline 2,B1_hour_sin_cos,B2_hour_sin_cos,-14.219709008883674,1.7925051465770182e-07,True,-0.1251517475230215
